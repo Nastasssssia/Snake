@@ -1,9 +1,11 @@
 #include <curses.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define MIN_Y 2
-#define CONTROLS 8 // Количество элементов в массиве управления
+#define CONTROLS 8        // Количество элементов в массиве управления
+#define INITIAL_DELAY 100 //  начальная задержка
 
 enum
 {
@@ -67,6 +69,15 @@ typedef struct tail_t
     int y;
 } tail_t;
 
+struct food
+{
+    int x;
+    int y;
+    time_t put_time;
+    char point;
+    uint8_t enable;
+} food[MAX_FOOD_SIZE];
+
 void initTail(struct tail_t t[], size_t size)
 {
     struct tail_t init_t = {0, 0};
@@ -92,6 +103,17 @@ void initSnake(snake_t *head, size_t size, int x, int y)
     head->tail = tail; // прикрепляем к голове хвост
     head->tsize = size + 1;
     head->controls = default_controls;
+}
+
+void initFood(struct food f[], size_t size)
+{
+    struct food init = {0, 0, 0, 0, 0};
+    int max_y = 0, max_x = 0;
+    getmaxyx(stdscr, max_y, max_x);
+    for (size_t i = 0; i < size; i++)
+    {
+        f[i] = init;
+    }
 }
 
 /*
@@ -184,26 +206,172 @@ void changeDirection(snake_t *snake, const int32_t key)
     }
 }
 
+/*
+ Обновить/разместить текущее зерно на поле
+ */
+void putFoodSeed(struct food *fp)
+{
+    int max_x = 0, max_y = 0;
+    char spoint[2] = {0};
+    getmaxyx(stdscr, max_y, max_x);
+    mvprintw(fp->y, fp->x, " ");
+    fp->x = rand() % (max_x - 1);
+    fp->y = rand() % (max_y - 2) + 1; // Не занимаем верхнюю строку
+    fp->put_time = time(NULL);
+    fp->point = '$';
+    fp->enable = 1;
+    spoint[0] = fp->point;
+    mvprintw(fp->y, fp->x, "%s", spoint);
+}
+/*
+ Разместить еду на поле
+ */
+void putFood(struct food f[], size_t
+                                  number_seeds)
+{
+    for (size_t i = 0; i < number_seeds; i++)
+    {
+        putFoodSeed(&f[i]);
+    }
+}
+
+void refreshFood(struct food f[], int nfood)
+{
+    int max_x = 0, max_y = 0;
+    char spoint[2] = {0};
+    getmaxyx(stdscr, max_y, max_x);
+    for (size_t i = 0; i < nfood; i++)
+    {
+        if (f[i].put_time)
+        {
+            if (!f[i].enable || (time(NULL) - f[i].put_time) > FOOD_EXPIRE_SECONDS)
+            {
+                putFoodSeed(&f[i]);
+            }
+        }
+    }
+}
+
+/*
+ поедание зерна змейкой
+ */
+_Bool haveEat(struct snake_t *head, struct food f[])
+{
+    for (size_t i = 0; i < MAX_FOOD_SIZE; i++)
+        if (f[i].enable && head->x == f[i].x && head->y == f[i].y)
+        {
+            f[i].enable = 0;
+            return 1;
+        }
+    return 0;
+}
+
+/*
+ Увеличение хвоста на 1 элемент
+ */
+void addTail(struct snake_t *head)
+{
+    if (head == NULL || head->tsize > MAX_TAIL_SIZE)
+    {
+        mvprintw(0, 0, "Can't add tail");
+        return;
+    }
+    head->tsize++;
+}
+
+int DELAY = INITIAL_DELAY; //  текущая задержка
+int level = 0;             //  текущий уровень
+_Bool is_paused = 0;       //  статус паузы
+
+void printLevel(snake_t *head)
+{
+    mvprintw(1, 0, "Level: %d", level);
+    refresh();
+}
+
+void printExit(snake_t *head)
+{
+    mvprintw(0, 0, "Game Over! Final Level: %d", level);
+    refresh();
+}
+
+void togglePause()
+{
+    is_paused = !is_paused;
+    if (is_paused)
+    {
+        mvprintw(0, 0, "Game Paused. Press 'P' to resume.");
+    }
+    else
+    {
+        mvprintw(0, 0, "Game resumed. Use arrows or WSAD for control. Press 'P' to pause.");
+    }
+    refresh();
+}
+
+void increaseSpeed()
+{
+    if (DELAY > 10)
+    {
+        DELAY -= 10;
+    }
+}
+
 int main()
 {
+    // Инициализация змейки
     snake_t *snake = (snake_t *)malloc(sizeof(snake_t));
     initSnake(snake, START_TAIL_SIZE, 10, 10);
+
+    // Инициализация еды
+    initFood(food, MAX_FOOD_SIZE);
+    putFood(food, MAX_FOOD_SIZE);
+
+    // Инициализация curses
     initscr();
     keypad(stdscr, TRUE); // Включаем F1, F2, стрелки и т.д.
     raw();                // Отключаем line buffering
     noecho();             // Отключаем echo() режим при вызове getch
     curs_set(FALSE);      // Отключаем курсор
-    mvprintw(0, 0, "Use arrows or WSAD for control. Press 'F10' for EXIT");
+    mvprintw(0, 0, "Use arrows or WSAD for control. Press 'P' to pause. Press 'F10' for EXIT");
     timeout(0); // Отключаем таймаут после нажатия клавиши в цикле
+
+    printLevel(snake); //  Отобразить начальный уровень
+
+    // Основной цикл игры
     int key_pressed = 0;
     while (key_pressed != STOP_GAME)
     {
         key_pressed = getch(); // Считываем клавишу
-        go(snake);
-        goTail(snake);
-        timeout(100); // Задержка при отрисовке
-        changeDirection(snake, key_pressed);
+
+        if (key_pressed == 'P' || key_pressed == 'p') //  Обработка паузы
+        {
+            togglePause();
+            continue;
+        }
+
+        if (!is_paused) //  Игровая логика только если игра не на паузе
+        {
+            go(snake);
+            goTail(snake);
+
+            // Проверка на поедание еды
+            if (haveEat(snake, food))
+            {
+                addTail(snake);  // Увеличиваем хвост при съедании еды
+                level++;         // Увеличиваем уровень
+                increaseSpeed(); // Увеличиваем скорость
+                printLevel(snake);
+            }
+
+            refreshFood(food, MAX_FOOD_SIZE); // Обновляем еду
+            timeout(DELAY);                   // Задержка при отрисовке
+            changeDirection(snake, key_pressed);
+        }
     }
+
+    // Завершение программы
+    printExit(snake); // Финальный результат
     free(snake->tail);
     free(snake);
     endwin(); // Завершаем режим curses mod
